@@ -7,6 +7,52 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 DEFAULT_HEADERS: tuple[str, ...] = (
+    "Identifiant de document",
+    "Reference document",
+    "1 Articles CGI",
+    "2 Articles CGI",
+    "3 Articles CGI",
+    "4 Articles CGI",
+    "5 Articles CGI",
+    "No disposition",
+    "Date mutation",
+    "Nature mutation",
+    "Valeur fonciere",
+    "No voie",
+    "B/T/Q",
+    "Type de voie",
+    "Code voie",
+    "Voie",
+    "Code postal",
+    "Commune",
+    "Code departement",
+    "Code commune",
+    "Prefixe de section",
+    "Section",
+    "No plan",
+    "No Volume",
+    "1er lot",
+    "Surface Carrez du 1er lot",
+    "2eme lot",
+    "Surface Carrez du 2eme lot",
+    "3eme lot",
+    "Surface Carrez du 3eme lot",
+    "4eme lot",
+    "Surface Carrez du 4eme lot",
+    "5eme lot",
+    "Surface Carrez du 5eme lot",
+    "Nombre de lots",
+    "Code type local",
+    "Type local",
+    "Identifiant local",
+    "Surface reelle bati",
+    "Nombre pieces principales",
+    "Nature culture",
+    "Nature culture speciale",
+    "Surface terrain",
+)
+
+SELECTED_COLUMNS: tuple[str, ...] = (
     "Date mutation",
     "Nature mutation",
     "Valeur fonciere",
@@ -31,6 +77,8 @@ DEFAULT_HEADERS: tuple[str, ...] = (
     "Nombre pieces principales",
     "Surface terrain",
 )
+
+DELIMITER = "|"
 
 
 def prompt_file_path() -> Path:
@@ -60,11 +108,12 @@ def prompt_postal_code() -> str:
 
 
 def _iterate_rows(path: Path, encoding: str) -> Iterable[list[str]]:
-    """Lit le fichier ligne par ligne avec un encodage specifique."""
+    """Lit le fichier ligne par ligne et separe chaque colonne par DELIMITER."""
     with path.open("r", encoding=encoding, newline="") as handle:
-        reader = csv.reader(handle, delimiter="|")
-        for row in reader:
-            yield [cell.strip() for cell in row]
+        for raw_line in handle:
+            # On retire uniquement les retours a la ligne pour conserver les colonnes vides.
+            line = raw_line.rstrip("\r\n")
+            yield [cell.strip() for cell in line.split(DELIMITER)]
 
 
 def load_rows_by_postal_code(path: Path, postal_code: str) -> tuple[list[str], list[dict[str, str]]]:
@@ -97,17 +146,33 @@ def load_rows_by_postal_code(path: Path, postal_code: str) -> tuple[list[str], l
         header = list(DEFAULT_HEADERS)
 
     filtered: List[dict[str, str]] = []
+    seen_rows: set[tuple[str, ...]] = set()
     for values in data_rows:
-        # Complete les lignes trop courtes avec des champs vides.
-        if len(values) < len(header):
-            values.extend([""] * (len(header) - len(values)))
-        record = dict(zip(header, values))
+        # Normalise la longueur de chaque ligne et elimine les doublons complets.
+        normalized = (values + [""] * (len(header) - len(values)))[: len(header)]
+        row_key = tuple(normalized)
+        if row_key in seen_rows:
+            continue
+        seen_rows.add(row_key)
+        record = dict(zip(header, normalized))
         if record.get("Code postal", "") == postal_code:
             filtered.append(record)
     return header, filtered
 
 
-def display_filtered_sample(records: list[dict[str, str]], limit: int = 5) -> None:
+def trim_records_to_selection(
+    records: list[dict[str, str]], columns: list[str]
+) -> list[dict[str, str]]:
+    """Conserve uniquement les colonnes selectionnees dans chaque enregistrement."""
+    trimmed: list[dict[str, str]] = []
+    for record in records:
+        trimmed.append({column: record.get(column, "") for column in columns})
+    return trimmed
+
+
+def display_filtered_sample(
+    records: list[dict[str, str]], columns: list[str], limit: int = 5
+) -> None:
     """Affiche un extrait des enregistrements filtres."""
     if not records:
         print("Aucune ligne ne correspond au code postal demande.")
@@ -116,7 +181,8 @@ def display_filtered_sample(records: list[dict[str, str]], limit: int = 5) -> No
     print(f"{len(records)} lignes correspondent au code postal.")
     for idx, record in enumerate(records[:limit], start=1):
         print(f"--- Ligne {idx} ---")
-        for key, value in record.items():
+        for key in columns:
+            value = record.get(key, "")
             if not value:
                 continue
             print(f"{key}: {value}")
@@ -137,10 +203,12 @@ def prompt_output_path(source: Path, postal_code: str) -> Path:
     return output_path
 
 
-def write_records_as_csv(path: Path, header: list[str], records: list[dict[str, str]]) -> None:
+def write_records_as_csv(
+    path: Path, header: list[str], records: list[dict[str, str]]
+) -> None:
     """Ecrit les enregistrements filtres dans un fichier CSV."""
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=header)
+        writer = csv.DictWriter(handle, fieldnames=header, delimiter=";")
         writer.writeheader()
         writer.writerows(records)
 
@@ -150,11 +218,13 @@ def main() -> None:
     path = prompt_file_path()
     postal_code = prompt_postal_code()
     header, records = load_rows_by_postal_code(path, postal_code)
-    display_filtered_sample(records)
+    selected_header = [column for column in SELECTED_COLUMNS if column in header]
+    trimmed_records = trim_records_to_selection(records, selected_header)
+    display_filtered_sample(trimmed_records, selected_header)
     if not records:
         return
     output_path = prompt_output_path(path, postal_code)
-    write_records_as_csv(output_path, header, records)
+    write_records_as_csv(output_path, selected_header, trimmed_records)
     print(f"CSV ecrit dans {output_path.resolve()}")
 
 
