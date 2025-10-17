@@ -1,15 +1,16 @@
-"""Outils de chargement pour le TP immobilier."""
+"""Outils de chargement et analyse pour le TP immobilier."""
 
 from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Dict
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, mean_squared_error, r2_score
+from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 
 DEFAULT_HEADERS: tuple[str, ...] = (
@@ -86,7 +87,6 @@ SELECTED_COLUMNS: tuple[str, ...] = (
 
 DELIMITER = "|"
 
-
 def prompt_file_path() -> Path:
     """Demande le chemin du fichier et s'assure qu'il existe."""
     while True:
@@ -98,7 +98,6 @@ def prompt_file_path() -> Path:
         if path.is_file():
             return path
         print(f"Fichier introuvable : {path}")
-
 
 def prompt_postal_code() -> str:
     """Demande un code postal et valide le format minimal."""
@@ -112,22 +111,14 @@ def prompt_postal_code() -> str:
             continue
         return postal_code
 
-
 def _iterate_rows(path: Path, encoding: str) -> Iterable[list[str]]:
     """Lit le fichier ligne par ligne et separe chaque colonne par DELIMITER."""
     with path.open("r", encoding=encoding, newline="") as handle:
         for raw_line in handle:
-            # On retire uniquement les retours a la ligne pour conserver les colonnes vides.
             line = raw_line.rstrip("\r\n")
             yield [cell.strip() for cell in line.split(DELIMITER)]
 
-
 def load_rows_by_postal_code(path: Path, postal_code: str) -> tuple[list[str], list[dict[str, str]]]:
-    """
-    Charge et filtre les lignes correspondant au code postal cible.
-
-    La lecture tente d'abord UTF-8 puis bascule sur Latin-1 si necessaire.
-    """
     last_error: Optional[UnicodeDecodeError] = None
     rows: Optional[list[list[str]]] = None
     for encoding in ("utf-8", "latin-1"):
@@ -147,14 +138,12 @@ def load_rows_by_postal_code(path: Path, postal_code: str) -> tuple[list[str], l
 
     header, *data_rows = rows
     if {h.lower() for h in header} != {h.lower() for h in DEFAULT_HEADERS}:
-        # Le fichier ne contient probablement pas d'en-tete : on le traite comme tel.
         data_rows = rows
         header = list(DEFAULT_HEADERS)
 
     filtered: List[dict[str, str]] = []
     seen_rows: set[tuple[str, ...]] = set()
     for values in data_rows:
-        # Normalise la longueur de chaque ligne et elimine les doublons complets.
         normalized = (values + [""] * (len(header) - len(values)))[: len(header)]
         row_key = tuple(normalized)
         if row_key in seen_rows:
@@ -165,21 +154,17 @@ def load_rows_by_postal_code(path: Path, postal_code: str) -> tuple[list[str], l
             filtered.append(record)
     return header, filtered
 
-
 def trim_records_to_selection(
     records: list[dict[str, str]], columns: list[str]
 ) -> list[dict[str, str]]:
-    """Conserve uniquement les colonnes selectionnees dans chaque enregistrement."""
     trimmed: list[dict[str, str]] = []
     for record in records:
         trimmed.append({column: record.get(column, "") for column in columns})
     return trimmed
 
-
 def display_filtered_sample(
     records: list[dict[str, str]], columns: list[str], limit: int = 5
 ) -> None:
-    """Affiche un extrait des enregistrements filtres."""
     if not records:
         print("Aucune ligne ne correspond au code postal demande.")
         return
@@ -193,9 +178,7 @@ def display_filtered_sample(
                 continue
             print(f"{key}: {value}")
 
-
 def prompt_output_path(source: Path, postal_code: str) -> Path:
-    """Propose un chemin de sortie par defaut et accepte l'override utilisateur."""
     default_name = f"{source.stem}_filtered_{postal_code}.csv"
     default_path = source.with_name(default_name)
     raw_output = input(
@@ -208,22 +191,19 @@ def prompt_output_path(source: Path, postal_code: str) -> Path:
         return output_path / default_name
     return output_path
 
-
 def write_records_as_csv(
     path: Path, header: list[str], records: list[dict[str, str]]
 ) -> None:
-    """Ecrit les enregistrements filtres dans un fichier CSV."""
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=header, delimiter=";")
         writer.writeheader()
         writer.writerows(records)
 
-
 def select_numerical_features(records, columns):
     df = pd.DataFrame(records)
     numerical_columns = [
-        "Valeur fonciere", 
-        "Surface Carrez du 1er lot", 
+        "Valeur fonciere",
+        "Surface Carrez du 1er lot",
         "Surface Carrez du 2eme lot",
         "Surface Carrez du 3eme lot",
         "Surface Carrez du 4eme lot",
@@ -234,10 +214,8 @@ def select_numerical_features(records, columns):
     ]
     selected = [col for col in numerical_columns if col in columns]
     if not selected:
-        # Pas de colonnes numériques sélectionnées -> DataFrame vide
         return pd.DataFrame(columns=selected)
 
-    # Nettoyage robuste : supprime espaces, remplace virgules par points, conversion numérique
     def _clean(col_ser: pd.Series) -> pd.Series:
         return pd.to_numeric(
             col_ser.astype(str)
@@ -248,14 +226,21 @@ def select_numerical_features(records, columns):
         )
 
     df_n = df[selected].apply(_clean)
-
-    # Remplacement des NaN par la médiane de la colonne; si toute la colonne est NaN -> 0
     medians = df_n.median()
     df_n = df_n.fillna(medians).fillna(0)
     return df_n
 
+# === Ajout : parsing robuste pour une série numérique ===
+def _parse_numeric_series(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(
+        series.astype(str)
+        .str.replace(r"\s+", "", regex=True)
+        .str.replace(",", ".", regex=False)
+        .replace({"": None, "nan": None, "None": None}),
+        errors="coerce",
+    ).fillna(0)
+
 def find_optimal_k(X, max_k=10, plot=False):
-    # Limiter k en fonction du nombre d'échantillons
     n_samples = X.shape[0]
     if n_samples < 2:
         return 1
@@ -270,7 +255,6 @@ def find_optimal_k(X, max_k=10, plot=False):
             kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
             labels = kmeans.fit_predict(X)
             inertias.append(kmeans.inertia_)
-            # silhouette_score nécessite au moins 2 labels distincts
             if len(set(labels)) < 2:
                 silhouettes.append(float("nan"))
             else:
@@ -280,7 +264,6 @@ def find_optimal_k(X, max_k=10, plot=False):
                     silhouettes.append(float("nan"))
             valid_k.append(k)
         except Exception:
-            # ignorer ce k si erreur (ex: trop de clusters pour peu d'échantillons)
             continue
 
     if not valid_k:
@@ -304,32 +287,96 @@ def find_optimal_k(X, max_k=10, plot=False):
         _plt.tight_layout()
         _plt.show()
 
-    # Choix du k : si silhouette dispo, on maximise, sinon on prend le plus petit k testé (2)
-    import math
-    sil_array = _np.array(silhouettes, dtype=float)
-    if not _np.all(_np.isnan(sil_array)):
-        best_idx = int(_np.nanargmax(sil_array))
+    import numpy as np
+    sil_array = np.array(silhouettes, dtype=float)
+    if not np.all(np.isnan(sil_array)):
+        best_idx = int(np.nanargmax(sil_array))
         return valid_k[best_idx]
-    # fallback
     return valid_k[0]
 
 def cluster_properties(records, columns, max_k=10, plot=False):
-    # Sélection et standardisation
     X = select_numerical_features(records, columns)
     if X.empty or X.shape[0] < 1:
         raise RuntimeError("Pas de données numériques valides pour le clustering.")
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-    # Choix k optimal
     k = find_optimal_k(X_scaled, max_k=max_k, plot=plot)
     if k < 1:
         raise RuntimeError("k invalide calculé pour le clustering.")
     kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
     clusters = kmeans.fit_predict(X_scaled)
-    # Assignation aux data
     return clusters, k, kmeans, scaler
 
-def main():
+# === Modifié : entraînement — utilise parsing robuste pour y ===
+def train_regression_by_cluster(
+    records: list[dict[str, str]], 
+    selected_columns: list[str]
+) -> Dict[int, LinearRegression]:
+    df = pd.DataFrame(records)
+    if "Cluster" not in df.columns:
+        raise RuntimeError("Pas de colonne 'Cluster' dans les enregistrements.")
+    # garantir entier
+    df["Cluster"] = pd.to_numeric(df["Cluster"], errors="coerce").fillna(-1).astype(int)
+
+    X_all = select_numerical_features(records, selected_columns)
+    # parsing robuste pour la cible
+    if "Valeur fonciere" not in df.columns:
+        raise RuntimeError("Pas de colonne 'Valeur fonciere' pour la régression.")
+    y_all = _parse_numeric_series(df["Valeur fonciere"])
+
+    models = {}
+    for cluster_id in sorted(df["Cluster"].unique()):
+        if cluster_id < 0:
+            continue
+        idx = df["Cluster"] == cluster_id
+        X_cluster = X_all[idx]
+        y_cluster = y_all[idx]
+
+        if len(X_cluster) < 2:
+            print(f"Cluster {cluster_id} trop petit pour entrainer un modèle (n={len(X_cluster)})")
+            continue
+
+        model = LinearRegression()
+        model.fit(X_cluster, y_cluster)
+        models[cluster_id] = model
+        print(f"Modèle entraîné pour Cluster {cluster_id} (n={len(X_cluster)})")
+
+    return models
+
+# === Modifié : prédiction/évaluation — parsing robuste pour y_true ===
+def predict_and_evaluate(
+    records: list[dict[str, str]], 
+    models: Dict[int, LinearRegression],
+    selected_columns: list[str]
+) -> None:
+    df = pd.DataFrame(records)
+    if "Cluster" not in df.columns:
+        raise RuntimeError("Pas de colonne 'Cluster' dans les enregistrements.")
+    df["Cluster"] = pd.to_numeric(df["Cluster"], errors="coerce").fillna(-1).astype(int)
+
+    X_all = select_numerical_features(records, selected_columns)
+    if "Valeur fonciere" not in df.columns:
+        raise RuntimeError("Pas de colonne 'Valeur fonciere' pour l'évaluation.")
+    y_true = _parse_numeric_series(df["Valeur fonciere"])
+
+    y_pred = np.zeros(len(df))
+
+    for cluster_id, model in models.items():
+        idx = df["Cluster"] == cluster_id
+        if idx.sum() == 0:
+            continue
+        X_cluster = X_all[idx]
+        preds = model.predict(X_cluster)
+        y_pred[idx] = preds
+        rmse = np.sqrt(mean_squared_error(y_true[idx], preds))
+        r2 = r2_score(y_true[idx], preds)
+        print(f"Cluster {cluster_id}: RMSE={rmse:.2f}, R²={r2:.2f}")
+
+    overall_rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    overall_r2 = r2_score(y_true, y_pred)
+    print(f"Global: RMSE={overall_rmse:.2f}, R²={overall_r2:.2f}")
+
+def main() -> None:
     path = prompt_file_path()
     postal_code = prompt_postal_code()
     header, records = load_rows_by_postal_code(path, postal_code)
@@ -339,46 +386,33 @@ def main():
     if not records:
         return
     
-    # ====== CLUSTERING (Partie 3) =======
+    # PARTIE 3 - CLUSTERING NON SUPERVISÉ
     print("\n[CLUSTERING NON SUPERVISÉ]")
     try:
         clusters, k, model, scaler = cluster_properties(trimmed_records, selected_header, max_k=8, plot=True)
     except Exception as e:
         print(f"Erreur clustering : {e}")
         return
-
+    # stocker cluster comme entier (avant: str)
     for rec, clust in zip(trimmed_records, clusters):
-        rec["Cluster"] = str(clust)
-
+        rec["Cluster"] = clust
     print(f"{k} clusters détectés.")
-    # Affiche un aperçu des clusters trouvés dans les premiers exemples
     for idx, rec in enumerate(trimmed_records[:5]):
         print(f"Ligne {idx+1}: Cluster {rec['Cluster']}")
     
-    # ====================================
-    
+    # PARTIE 4 - RÉGRESSION PAR CLASSE
+    print("\n[RÉGRESSION PAR CLASSE]")
+    regression_models = train_regression_by_cluster(trimmed_records, selected_header)
+    if not regression_models:
+        print("Aucun modèle de régression n'a pu être entraîné.")
+        return
+    predict_and_evaluate(trimmed_records, regression_models, selected_header)
+
     output_path = prompt_output_path(path, postal_code)
-    # Ajoute 'Cluster' à l'entête si absent
     if "Cluster" not in selected_header:
         selected_header.append("Cluster")
     write_records_as_csv(output_path, selected_header, trimmed_records)
     print(f"CSV écrit (avec clusters) dans {output_path.resolve()}")
-
-'''
-def main() -> None:
-    """Point d'entree simple pour tester la recuperation."""
-    path = prompt_file_path()
-    postal_code = prompt_postal_code()
-    header, records = load_rows_by_postal_code(path, postal_code)
-    selected_header = [column for column in SELECTED_COLUMNS if column in header]
-    trimmed_records = trim_records_to_selection(records, selected_header)
-    display_filtered_sample(trimmed_records, selected_header)
-    if not records:
-        return
-    output_path = prompt_output_path(path, postal_code)
-    write_records_as_csv(output_path, selected_header, trimmed_records)
-    print(f"CSV ecrit dans {output_path.resolve()}")
-'''
 
 if __name__ == "__main__":
     main()
