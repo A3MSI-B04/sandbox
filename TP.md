@@ -16,17 +16,17 @@ Vous devez choisir un fichier de données immobilières (par exemple : transacti
 
 1. Compréhension des données 
 
-Identifier les colonnes disponibles et leur signification. 
+✅ Identifier les colonnes disponibles et leur signification. 
 
-Déterminer les variables pertinentes pour la prédiction du prix. 
+✅ Déterminer les variables pertinentes pour la prédiction du prix. 
 
 Justifier vos choix dans le rapport. 
 
 2. Nettoyage des données 
 
-Supprimer ou traiter les valeurs manquantes, aberrantes ou inutiles. 
+✅ Supprimer ou traiter les valeurs manquantes, aberrantes ou inutiles. 
 
-Normaliser ou encoder les variables si nécessaire. 
+✅ Normaliser ou encoder les variables si nécessaire. 
 
 Documenter les étapes de nettoyage dans le rapport. 
 
