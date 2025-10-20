@@ -199,6 +199,8 @@ def write_records_as_csv(
         writer.writeheader()
         writer.writerows(records)
 
+# Fonctions numériques et clustering
+
 def select_numerical_features(records, columns):
     df = pd.DataFrame(records)
     numerical_columns = [
@@ -231,7 +233,7 @@ def select_numerical_features(records, columns):
     return df_n
 
 # === Ajout : parsing robuste pour une série numérique ===
-def _parse_numeric_series(series: pd.Series) -> pd.Series:
+def parse_numeric_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(
         series.astype(str)
         .str.replace(r"\s+", "", regex=True)
@@ -307,23 +309,34 @@ def cluster_properties(records, columns, max_k=10, plot=False):
     clusters = kmeans.fit_predict(X_scaled)
     return clusters, k, kmeans, scaler
 
-# === Modifié : entraînement — utilise parsing robuste pour y ===
-def train_regression_by_cluster(
-    records: list[dict[str, str]], 
-    selected_columns: list[str]
-) -> Dict[int, LinearRegression]:
+# Interpretation automatique des clusters
+
+def print_cluster_summary(records, clusters, columns):
+    df = pd.DataFrame(records)
+    df["Cluster"] = clusters
+    num_cols = [c for c in columns if c in df.columns and pd.api.types.is_numeric_dtype(df[c]) or c.startswith("Surface")]
+    print("\n=== Analyse descriptive des clusters ===")
+    for cid in sorted(set(clusters)):
+        sub = df[df["Cluster"] == cid]
+        if len(sub) == 0:
+            continue
+        print(f"\n--- Cluster {cid} ({len(sub)} transactions) ---")
+        means = sub[num_cols].apply(pd.to_numeric, errors="coerce").mean().sort_values(ascending=False)
+        # Affiche les 5 variables les plus élevées pour ce cluster
+        print("Moyennes (top 5 variables) :")
+        print(means.head(5).to_string())
+    print("\nVariables les plus discriminantes (analyse manuelle recommandée dans le rapport).")
+
+# Régression par classe
+def train_regression_by_cluster(records: list[dict[str, str]], selected_columns: list[str]) -> Dict[int, LinearRegression]:
     df = pd.DataFrame(records)
     if "Cluster" not in df.columns:
-        raise RuntimeError("Pas de colonne 'Cluster' dans les enregistrements.")
-    # garantir entier
+        raise RuntimeError("Pas de colonne Cluster dans les enregistrements.")
     df["Cluster"] = pd.to_numeric(df["Cluster"], errors="coerce").fillna(-1).astype(int)
-
     X_all = select_numerical_features(records, selected_columns)
-    # parsing robuste pour la cible
     if "Valeur fonciere" not in df.columns:
-        raise RuntimeError("Pas de colonne 'Valeur fonciere' pour la régression.")
-    y_all = _parse_numeric_series(df["Valeur fonciere"])
-
+        raise RuntimeError("Pas de colonne Valeur fonciere pour la régression.")
+    y_all = parse_numeric_series(df["Valeur fonciere"])
     models = {}
     for cluster_id in sorted(df["Cluster"].unique()):
         if cluster_id < 0:
@@ -331,36 +344,29 @@ def train_regression_by_cluster(
         idx = df["Cluster"] == cluster_id
         X_cluster = X_all[idx]
         y_cluster = y_all[idx]
-
         if len(X_cluster) < 2:
             print(f"Cluster {cluster_id} trop petit pour entrainer un modèle (n={len(X_cluster)})")
             continue
-
         model = LinearRegression()
         model.fit(X_cluster, y_cluster)
         models[cluster_id] = model
         print(f"Modèle entraîné pour Cluster {cluster_id} (n={len(X_cluster)})")
-
+        # Sauvegarde modèle
+        joblib.dump(model, f"regression_model_cluster_{cluster_id}.joblib")
     return models
 
 # === Modifié : prédiction/évaluation — parsing robuste pour y_true ===
-def predict_and_evaluate(
-    records: list[dict[str, str]], 
-    models: Dict[int, LinearRegression],
-    selected_columns: list[str]
-) -> None:
+def predict_and_evaluate(records: list[dict[str, str]], models: Dict[int, LinearRegression], selected_columns: list[str]) -> None:
     df = pd.DataFrame(records)
     if "Cluster" not in df.columns:
-        raise RuntimeError("Pas de colonne 'Cluster' dans les enregistrements.")
+        raise RuntimeError("Pas de colonne Cluster dans les enregistrements.")
     df["Cluster"] = pd.to_numeric(df["Cluster"], errors="coerce").fillna(-1).astype(int)
-
     X_all = select_numerical_features(records, selected_columns)
     if "Valeur fonciere" not in df.columns:
-        raise RuntimeError("Pas de colonne 'Valeur fonciere' pour l'évaluation.")
-    y_true = _parse_numeric_series(df["Valeur fonciere"])
-
+        raise RuntimeError("Pas de colonne Valeur fonciere pour l'évaluation.")
+    y_true = parse_numeric_series(df["Valeur fonciere"])
     y_pred = np.zeros(len(df))
-
+    print("\n=== Évaluation des modèles ===")
     for cluster_id, model in models.items():
         idx = df["Cluster"] == cluster_id
         if idx.sum() == 0:
@@ -371,10 +377,36 @@ def predict_and_evaluate(
         rmse = np.sqrt(mean_squared_error(y_true[idx], preds))
         r2 = r2_score(y_true[idx], preds)
         print(f"Cluster {cluster_id}: RMSE={rmse:.2f}, R²={r2:.2f}")
-
     overall_rmse = np.sqrt(mean_squared_error(y_true, y_pred))
     overall_r2 = r2_score(y_true, y_pred)
-    print(f"Global: RMSE={overall_rmse:.2f}, R²={overall_r2:.2f}")
+    print(f"\nGlobal: RMSE={overall_rmse:.2f}, R²={overall_r2:.2f}")
+
+# --- Optionnel : estimation pondérée (partie 5) ---
+
+def predict_weighted(records, models, kmeans=None, scaler=None, selected_columns=None):
+    """
+    Donne une estimation pondérée en fonction de la probabilité d'appartenance à chaque classe (clusters KMeans).
+    """
+    if kmeans is None or scaler is None:
+        raise ValueError("KMeans et StandardScaler nécessaires pour la pondération.")
+    df = pd.DataFrame(records)
+    X = select_numerical_features(records, selected_columns)
+    X_scaled = scaler.transform(X)
+    # Probabilités : à partir des distances inverses à chaque centroïde
+    distances = kmeans.transform(X_scaled)
+    inverse_dist = 1 / (distances + 1e-10)
+    probs = inverse_dist / inverse_dist.sum(axis=1, keepdims=True)
+    final_preds = np.zeros(len(df))
+    for i, row in enumerate(X_scaled):
+        pred = 0
+        for cid, model in models.items():
+            pred += model.predict([row])[0] * probs[i, cid]
+        final_preds[i] = pred
+    # Ajoute la prédiction pondérée dans les enregistrements
+    for rec, v in zip(records, final_preds):
+        rec["Estimation pondérée"] = f"{v:.2f}"
+    print("\nPrédictions pondérées (estimation avancée) ajoutées à records.")
+
 
 def main() -> None:
     path = prompt_file_path()
@@ -385,34 +417,36 @@ def main() -> None:
     display_filtered_sample(trimmed_records, selected_header)
     if not records:
         return
-    
-    # PARTIE 3 - CLUSTERING NON SUPERVISÉ
+
     print("\n[CLUSTERING NON SUPERVISÉ]")
     try:
-        clusters, k, model, scaler = cluster_properties(trimmed_records, selected_header, max_k=8, plot=True)
+        clusters, k, kmeans, scaler = cluster_properties(trimmed_records, selected_header, max_k=8, plot=True)
     except Exception as e:
         print(f"Erreur clustering : {e}")
         return
-    # stocker cluster comme entier (avant: str)
     for rec, clust in zip(trimmed_records, clusters):
-        rec["Cluster"] = clust
+        rec["Cluster"] = int(clust)
     print(f"{k} clusters détectés.")
-    for idx, rec in enumerate(trimmed_records[:5]):
-        print(f"Ligne {idx+1}: Cluster {rec['Cluster']}")
-    
-    # PARTIE 4 - RÉGRESSION PAR CLASSE
+    print_cluster_summary(trimmed_records, clusters, selected_header)          # <--- amélioration majeure !    
+
     print("\n[RÉGRESSION PAR CLASSE]")
     regression_models = train_regression_by_cluster(trimmed_records, selected_header)
     if not regression_models:
         print("Aucun modèle de régression n'a pu être entraîné.")
         return
     predict_and_evaluate(trimmed_records, regression_models, selected_header)
+    
+    # Ajout partie 5 optionnelle
+    if regression_models and kmeans and scaler:
+        predict_weighted(trimmed_records, regression_models, kmeans, scaler, selected_header)
+        if "Estimation pondérée" not in selected_header:
+            selected_header.append("Estimation pondérée")
 
     output_path = prompt_output_path(path, postal_code)
     if "Cluster" not in selected_header:
         selected_header.append("Cluster")
     write_records_as_csv(output_path, selected_header, trimmed_records)
-    print(f"CSV écrit (avec clusters) dans {output_path.resolve()}")
+    print(f"CSV écrit (avec clusters & pondération) dans {output_path.resolve()}")
 
 if __name__ == "__main__":
     main()
