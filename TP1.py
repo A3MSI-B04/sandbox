@@ -454,7 +454,7 @@ def predict_weighted(records: List[Dict[str, str]], models: Dict[int, LinearRegr
             # si cid dépasse le nombre de colonnes probs, on ignore (sécurité)
             if cid >= probs.shape[1]:
                 continue
-            p += float(model.predict([row])[0]) * float(probs[i, cid])
+            p += float(model.predict(row.reshape(1, -1))[0]) * float(probs[i, cid])
         final_preds[i] = p
 
     for rec, v in zip(records, final_preds):
@@ -487,7 +487,7 @@ def main() -> None:
         return
 
     for rec, cl in zip(trimmed, clusters):
-        rec["Cluster"] = int(cl)
+        rec["Cluster"] = str(int(cl))
 
     print(f"{k} clusters détectés.")
     print_cluster_summary(trimmed, clusters, selected_header)
