@@ -19,9 +19,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, mean_squared_error, r2_score
 from sklearn.linear_model import LinearRegression
 
-# ---------------------------------------------------------------------------
 # Constantes et configuration
-# ---------------------------------------------------------------------------
 
 DEFAULT_HEADERS: Tuple[str, ...] = (
     "Identifiant de document",
@@ -112,15 +110,12 @@ NUMERICAL_COLUMNS = [
     "Surface terrain",
 ]
 
-
-# ---------------------------------------------------------------------------
 # I/O et utilitaires
-# ---------------------------------------------------------------------------
 
 def prompt_file_path() -> Path:
     """Invite l'utilisateur à fournir un chemin de fichier et vérifie son existence."""
     while True:
-        raw = input(f"Chemin du fichier texte (séparateur '{INPUT_DELIMITER}') : ").strip()
+        raw = input(f"Chemin du fichier texte : ").strip()
         if not raw:
             print("Le chemin ne doit pas être vide.")
             continue
@@ -229,9 +224,7 @@ def write_records_as_csv(path: Path, header: List[str], records: List[Dict[str, 
         writer.writerows(records)
 
 
-# ---------------------------------------------------------------------------
 # Fusion dépendances / résidences
-# ---------------------------------------------------------------------------
 
 def regrouper_dependances(records: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """Ajoute la clé 'Dependance presente' (Oui/Non) si une dépendance partage la même Valeur fonciere+Voie."""
@@ -264,9 +257,7 @@ def regrouper_dependances(records: List[Dict[str, str]]) -> List[Dict[str, str]]
     return out
 
 
-# ---------------------------------------------------------------------------
 # Parsing numérique et sélection des features
-# ---------------------------------------------------------------------------
 
 def parse_numeric_series(series: pd.Series) -> pd.Series:
     """Convertit une Series en float : supprime espaces, remplace ',' par '.' puis to_numeric coercing."""
@@ -291,9 +282,7 @@ def select_numerical_features(records: List[Dict[str, str]], columns: List[str])
     return df_num.fillna(medians).fillna(0.0)
 
 
-# ---------------------------------------------------------------------------
 # Clustering (KMeans) et choix automatique de k
-# ---------------------------------------------------------------------------
 
 def find_optimal_k(X: np.ndarray, max_k: int = 10, plot: bool = False) -> int:
     """Teste plusieurs k et renvoie le k choisi (maximisant la silhouette si possible)."""
@@ -364,9 +353,7 @@ def cluster_properties(records: List[Dict[str, str]], columns: List[str], max_k:
     return labels, k, kmeans, scaler
 
 
-# ---------------------------------------------------------------------------
 # Analyse descriptive des clusters
-# ---------------------------------------------------------------------------
 
 def print_cluster_summary(records: List[Dict[str, str]], clusters: np.ndarray, columns: List[str]) -> None:
     """Affiche des statistiques simples (moyennes) pour chaque cluster."""
@@ -385,9 +372,7 @@ def print_cluster_summary(records: List[Dict[str, str]], clusters: np.ndarray, c
         print(means.head(5).to_string())
 
 
-# ---------------------------------------------------------------------------
 # Régression par cluster
-# ---------------------------------------------------------------------------
 
 def train_regression_by_cluster(records: List[Dict[str, str]], selected_columns: List[str]) -> Dict[int, LinearRegression]:
     """Entraîne un LinearRegression par cluster et sauvegarde chaque modèle."""
@@ -449,9 +434,7 @@ def predict_and_evaluate(records: List[Dict[str, str]], models: Dict[int, Linear
     print(f"\nGlobal: RMSE={overall_rmse:.2f}, R²={overall_r2:.2f}")
 
 
-# ---------------------------------------------------------------------------
 # Prédiction pondérée optionnelle (partie 5)
-# ---------------------------------------------------------------------------
 
 def predict_weighted(records: List[Dict[str, str]], models: Dict[int, LinearRegression], kmeans: KMeans, scaler: StandardScaler, selected_columns: List[str]) -> None:
     """Prédit une valeur pondérée par la probabilité d'appartenance aux clusters."""
@@ -479,9 +462,7 @@ def predict_weighted(records: List[Dict[str, str]], models: Dict[int, LinearRegr
     print("\nPrédictions pondérées ajoutées aux enregistrements.")
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     path = prompt_file_path()
